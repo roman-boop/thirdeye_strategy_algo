@@ -90,10 +90,14 @@ class BingxClient:
                 return None
 
 
-    def place_market_order(self, side: str, qty: float, symbol: str = None, stop: float = None, tp: float = None):
+    def place_market_order(self, side: str, qty: float, symbol: str = None, stop: float = None, tp: float = None, pos_side_BOTH= False):
         side_param = "BUY" if side == "long" else "SELL"
         s = symbol or self.symbol
-
+        
+        pos_side = 'LONG' if side =='long' else 'SHORT'
+        pos_side = 'BOTH' if pos_side_BOTH == True else pos_side
+        
+        
         params = {
             "symbol": s,
             "side": side_param,
