@@ -6,7 +6,12 @@ from binance.client import Client as BinanceClient
 from binance import ThreadedWebsocketManager
 from binance.enums import *
 from bingx_client import BingxClient  # ← твой файл с классом
-
+import requests
+import time
+import hmac
+import hashlib
+from decimal import Decimal
+from typing import Dict, Optional, List, Tuple
 # === НАСТРОЙКИ ЛОГИРОВАНИЯ ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger(__name__)
@@ -17,6 +22,7 @@ BINANCE_API_SECRET = ''
 
 BINGX_API_KEY = ''
 BINGX_API_SECRET = ''
+base_url = "https://open-api.bingx.com"
 
 # === ПАРАМЕТРЫ ТОРГОВЛИ ===
 SYMBOL = 'SOLUSDT'
@@ -27,8 +33,9 @@ RISK_PER_TRADE = 0.01  # 1% от капитала на сделку
 tp_pct = 5.0
 sl_pct = 1.0
 be_trig_pct = 2.0
-cci_length = 25
+cci_length = 25 
 adx_long_min = 16
+QTY_SOL = 1
 
 # Фиксированные параметры стратегии
 conversionPeriods = 10
@@ -79,24 +86,56 @@ long_be_triggered = short_be_triggered = False
 allow_long = allow_short = True
 last_capital_update = time.time()
 
-# === ПОЛУЧЕНИЕ ТЕКУЩЕГО БАЛАНСА USDT НА BINGX ===
-def get_usdt_balance():
-    try:
-        # BingX не имеет прямого метода баланса в твоём клиенте — добавим простой запрос
-        path = "/openApi/swap/v2/user/balance"
-        resp = bingx_client._request("GET", path)
-        if resp and resp.get('code') == 0:
-            for asset in resp['data']:
-                if asset['asset'] == 'USDT':
-                    return float(asset['availableBalance'])
-        return 10000.0  # fallback
-    except Exception as e:
-        logger.error(f"Ошибка получения баланса: {e}")
-        return 10000.0
+def get_usdt_balance() -> Tuple[bool, Dict]:
+        endpoint = "/openApi/swap/v2/user/balance"
+        data = _request(endpoint, {})
+    
+        if data and data.get('code') == 0:
+            balance_data = data.get('data', {})
+            if isinstance(balance_data, dict) and 'balance' in balance_data:
+                balance_info = balance_data['balance']
+                logger.info(f"💰 БАЛАНС АККАУНТА:")
+                logger.info(f"   Общий баланс: {balance_info.get('balance', 'N/A')} USDT")
+                logger.info(f"   Доступная маржа: {balance_info.get('availableMargin', 'N/A')} USDT")
+                logger.info(f"   Использованная маржа: {balance_info.get('usedMargin', 'N/A')} USDT")
+                logger.info(f"   Нереализованный PnL: {balance_info.get('unrealizedProfit', 'N/A')} USDT")
+                # notify(f"Баланс: {balance_info.get('balance', 'N/A')} USDT\nМаржа: {balance_info.get('availableMargin', 'N/A')} USDT")
+                return True, balance_info
+        logger.error(f"❌ Не удалось получить баланс: {data}")
+        # notify(f"❌ Не удалось получить баланс: {data}")
+        return False, {}
 
-capital = get_usdt_balance()
-logger.info(f"Стартовый капитал на BingX: {capital:.2f} USDT")
+def _request( endpoint: str, params: Dict, method: str = "GET") -> Dict:
+        url = f"{base_url}{endpoint}"
+        params['timestamp'] = int(time.time() * 1000)
+        params['signature'] = _generate_signature(params)
+        headers = {'X-BX-APIKEY': BINGX_API_KEY}
+        try:
+            if method == "GET":
+                response = requests.get(url, params=params, headers=headers)
+            elif method == "DELETE":
+                response = requests.delete(url, params=params, headers=headers)
+            else:
+                response = requests.post(url, params=params, headers=headers)
+            if response.status_code == 429:
+                logger.warning("🕒 Rate limit! Ждем перед повтором запроса...")
+                time.sleep(5)
+            response.raise_for_status()
+            return response.json()
 
+        except Exception as e:
+            logger.error(f"❌ Неожиданная ошибка при API запросе: {e}")
+
+        
+def _generate_signature(params: Dict) -> str:
+    query_string = '&'.join([f"{key}={value}" for key, value in params.items()])
+    return hmac.new(
+            BINGX_API_SECRET.encode('utf-8'),
+            query_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+
+print( get_usdt_balance())
 # === ОБРАБОТКА НОВОЙ ЗАКРЫТОЙ СВЕЧИ ===
 def process_candle(msg):
     global df, position, entry_price, long_sl, long_tp, short_sl, short_tp
@@ -215,13 +254,14 @@ def process_candle(msg):
         global last_capital_update
         if time.time() - last_capital_update > 30:
             capital = get_usdt_balance()
+            print('capital:', capital)
             last_capital_update = time.time()
 
         risk_amount = capital * RISK_PER_TRADE
 
         # === ВХОДЫ ===
         if long_signal and position == 0 and allow_long:
-            qty = risk_amount / price
+            qty = QTY_SOL
             logger.info(f"ОТКРЫВАЕМ LONG: {qty:.6f} {SYMBOL} по {price}")
             resp = bingx_client.place_market_order("long", qty, stop=round(price * (1 - sl_pct / 100), 1), tp=round(price * (1 + tp_pct / 100), 1))
             logger.info(f"Ответ BingX: {resp}")
@@ -235,7 +275,7 @@ def process_candle(msg):
                 allow_short = True
 
         elif short_signal and position == 0 and allow_short:
-            qty = risk_amount / price
+            qty = QTY_SOL
             logger.info(f"ОТКРЫВАЕМ SHORT: {qty:.6f} {SYMBOL} по {price}")
             resp = bingx_client.place_market_order("short", qty, stop=round(price * (1 + sl_pct / 100), 1), tp=round(price * (1 - tp_pct / 100), 1))
             logger.info(f"Ответ BingX: {resp}")

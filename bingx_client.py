@@ -27,10 +27,10 @@ class BingxClient:
             return f"{paramsStr}&timestamp={timestamp}"
         else:
             return f"timestamp={timestamp}"
-    APIURL = "https://open-api.bingx.com"
+
     def send_request(self, method: str, path: str, urlpa: str, payload: dict):
         sign = self._sign(urlpa)
-        url = f"{self.APIURL}{path}?{urlpa}&signature={sign}"
+        url = f"{self.BASE_URL}{path}?{urlpa}&signature={sign}"
         headers = {'X-BX-APIKEY': self.api_key}
         response = requests.request(method, url, headers=headers, data=payload)
         try:
@@ -90,14 +90,10 @@ class BingxClient:
                 return None
 
 
-    def place_market_order(self, side: str, qty: float, symbol: str = None, stop: float = None, tp: float = None, pos_side_BOTH= False):
+    def place_market_order(self, side: str, qty: float, symbol: str = None, stop: float = None, tp: float = None):
         side_param = "BUY" if side == "long" else "SELL"
         s = symbol or self.symbol
-        
-        pos_side = 'LONG' if side =='long' else 'SHORT'
-        pos_side = 'BOTH' if pos_side_BOTH == True else pos_side
-        
-        
+
         params = {
             "symbol": s,
             "side": side_param,
